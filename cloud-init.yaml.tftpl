@@ -1,0 +1,50 @@
+#cloud-config
+write_files:
+- path: /usr/local/sbin/install-tpot.sh
+  owner: root:root
+  permissions: "0700"
+  content: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    umask 077
+    export DEBIAN_FRONTEND=noninteractive
+    export NEEDRESTART_MODE=a
+
+    admin_user="${admin_username}"
+    branch="${tpot_branch}"
+    repo_url="${tpot_repo_url}"
+    web_password="$(printf '%s' '${tpot_web_password_base64}' | base64 --decode)"
+    web_user="${tpot_web_user}"
+
+    apt-get update
+    apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade -y
+    apt-get install -y ca-certificates curl git iproute2 sudo
+
+    echo "$admin_user ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-tpot-installer
+    chmod 0440 /etc/sudoers.d/90-tpot-installer
+    visudo -cf /etc/sudoers.d/90-tpot-installer
+
+    if [ ! -d "/home/$admin_user/tpotce/.git" ]; then
+      sudo -H -u "$admin_user" git clone --branch "$branch" "$repo_url" "/home/$admin_user/tpotce"
+    fi
+
+    cd "/home/$admin_user/tpotce"
+    sudo -H -u "$admin_user" ./install.sh -s -t h -u "$web_user" -p "$web_password"
+    unset web_password
+
+    test -s .env
+    docker compose config --quiet
+    docker compose pull
+    systemctl enable tpot.service
+
+    touch /var/lib/tpot-install.complete
+
+runcmd:
+- [ bash, -lc, "test -f /var/lib/tpot-install.complete || /usr/local/sbin/install-tpot.sh >/var/log/tpot-install.log 2>&1" ]
+
+power_state:
+  mode: reboot
+  delay: now
+  timeout: 120
+  message: T-Pot installed; restarting to start honeypots and WebUI
+  condition: [ test, -f, /var/lib/tpot-install.complete ]
